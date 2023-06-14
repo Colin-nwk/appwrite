@@ -36,12 +36,15 @@ use Appwrite\Network\Validator\Email;
 use Appwrite\Network\Validator\Origin;
 use Appwrite\OpenSSL\OpenSSL;
 use Appwrite\Usage\Stats;
+use Appwrite\Utopia\Request;
+use Appwrite\Utopia\Response;
 use MaxMind\Db\Reader;
 use PHPMailer\PHPMailer\PHPMailer;
 use Swoole\Database\PDOConfig;
 use Swoole\Database\PDOPool;
 use Swoole\Database\RedisConfig;
 use Swoole\Database\RedisPool;
+use Swoole\Http\Response as SwooleResponse;
 use Utopia\App;
 use Utopia\Database\Helpers\ID;
 use Utopia\Logger\Logger;
@@ -56,6 +59,8 @@ use Utopia\Database\Validator\Authorization;
 use Utopia\Database\Validator\Datetime as DatetimeValidator;
 use Utopia\Database\Validator\Structure;
 use Utopia\Locale\Locale;
+use Utopia\Logger\Log;
+use Utopia\Logger\Log\User;
 use Utopia\Messaging\Adapters\SMS\Mock;
 use Utopia\Messaging\Adapters\SMS\Msg91;
 use Utopia\Messaging\Adapters\SMS\Telesign;
@@ -1180,3 +1185,240 @@ App::setResource('requestTimestamp', function ($request) {
     }
     return $requestTimestamp;
 }, ['request']);
+
+App::setResource('eventHandler', function(App $utopia, ?Logger $logger, array $loggerBreadcrumbs, Request $request, Document $project, Document $user, Event $events) {
+    return function (string $databaseEvent, Document $document) use ($utopia, $logger, $loggerBreadcrumbs, $request, $project, $user, $events) {
+        $route = $utopia->match($request);
+        $response = new Response(new SwooleResponse());
+        try {
+            $dump = function($value) {
+                $p = var_export($value, true);
+                $b = debug_backtrace();
+                print($b[0]['file'] . ':' . $b[0]['line'] . ' - ' . $p . "\n");
+            };
+            $dump('in ' . $route->getMethod() . ' ' . $route->getPath());
+
+            $queue = '';
+            $class = '';
+            $event = new Event('', '');
+
+            // $event
+            // ->setContext('collection', $collection)
+            // ->setContext('database', $db);
+
+            $event
+                ->setProject($project)
+                ->setUser($user);
+                
+            $eventPattern = $route->getLabel('event', '');
+            $eventPatternReady = true;
+            $modelType = $route->getLabel('sdk.response.model', '');
+            $collection = $document->getCollection();
+            $dump($databaseEvent);
+            $dump($collection);
+
+            switch ($collection) {
+                case 'users':
+                    if (!\str_starts_with($eventPattern, 'users.[userId]')) {
+                        $eventPattern = 'users.[userId]';
+                        $eventPatternReady = false;
+                    }
+                    $modelType = Response::MODEL_USER;
+                    $event->setParam('userId', $document->getId());
+                    break;
+                case 'sessions':
+                    $eventPattern = 'users.[userId].sessions.[sessionId]';
+                    $eventPatternReady = false;
+                    $modelType = Response::MODEL_SESSION;
+                    $event
+                        ->setParam('userId', $document->getAttribute('userId'))
+                        ->setParam('sessionId', $document->getId());
+                    break;
+                case 'tokens':
+                    switch($eventPattern) {
+                        case 'users.[userId].recovery.[tokenId].update':
+                        case 'users.[userId].verification.[tokenId].update':
+                            // keep this eventPattern
+                            break;
+                        default:
+                            $eventPattern = 'users.[userId].tokens.[tokenId]';
+                            $eventPatternReady = false;
+                            break;
+                    }
+                    // $token = $events->getContext('token');
+                    // $secret = $token->getAttribute('secret', null);
+                    $modelType = Response::MODEL_TOKEN;
+                    $event
+                        ->setParam('userId', $document->getAttribute('userId'))
+                        ->setParam('tokenId', $document->getId());
+                    break;
+                case 'databases':
+                    $event->setParam('databaseId', $document->getId());
+                    break;
+                case str_starts_with($collection, 'database_'):
+                    $modelType = Response::MODEL_COLLECTION;
+                    $database = $events->getContext('database');
+                    $event->setContext('database', $database);
+                    $event
+                        ->setParam('databaseId', $database->getId())
+                        ->setParam('collectionId', $document->getId());
+                    break;
+                case 'attributes':
+                    $database = $events->getContext('database');
+                    $collection = $events->getContext('collection');
+                    $event
+                        ->setContext('database', $database)
+                        ->setContext('collection', $collection);
+
+                    $event
+                        ->setParam('databaseId', $database->getId())
+                        ->setParam('collectionId', $collection->getId())
+                        ->setParam('attributeId', $document->getId());
+
+                    // Select response model based on type and format
+                    $type = $document->getAttribute('type');
+                    $format = $document->getAttribute('format');
+                    $modelType = match ($type) {
+                        Database::VAR_BOOLEAN => Response::MODEL_ATTRIBUTE_BOOLEAN,
+                        Database::VAR_INTEGER => Response::MODEL_ATTRIBUTE_INTEGER,
+                        Database::VAR_FLOAT => Response::MODEL_ATTRIBUTE_FLOAT,
+                        Database::VAR_DATETIME => Response::MODEL_ATTRIBUTE_DATETIME,
+                        Database::VAR_RELATIONSHIP => Response::MODEL_ATTRIBUTE_RELATIONSHIP,
+                        Database::VAR_STRING => match ($format) {
+                            APP_DATABASE_ATTRIBUTE_EMAIL => Response::MODEL_ATTRIBUTE_EMAIL,
+                            APP_DATABASE_ATTRIBUTE_ENUM => Response::MODEL_ATTRIBUTE_ENUM,
+                            APP_DATABASE_ATTRIBUTE_IP => Response::MODEL_ATTRIBUTE_IP,
+                            APP_DATABASE_ATTRIBUTE_URL => Response::MODEL_ATTRIBUTE_URL,
+                            default => Response::MODEL_ATTRIBUTE_STRING,
+                        },
+                        default => Response::MODEL_ATTRIBUTE,
+                    };
+
+                    break;
+                case str_starts_with($collection, 'bucket_'):
+                    $modelType = Response::MODEL_FILE;
+                    $event->setContext('bucket', $document->getAttribute(''));
+                    break;
+                default:
+                    return;
+            }
+
+            if (!$eventPatternReady) {
+                switch ($databaseEvent) {
+                    case Database::EVENT_DOCUMENT_CREATE:
+                        $eventPattern .= '.create';
+                        break;
+                    case Database::EVENT_DOCUMENT_UPDATE:
+                        $eventPattern .= '.update';
+                        break;
+                    case Database::EVENT_DOCUMENT_DELETE:
+                        $eventPattern .= '.delete';
+                        break;
+                }
+            }
+
+            $event->setEvent($eventPattern);
+
+            $payload = $response->output(new Document($document->getArrayCopy()), $modelType);
+            $event->setPayload($payload);
+
+            $dump($event->getEvent());
+            $dump($event->getParams());
+            $dump($event->getPayload());
+
+            // $event->setParam('key', 'value');
+            
+            // /**
+            //  * Trigger functions.
+            //  */
+            // $events
+            //     ->setClass(Event::FUNCTIONS_CLASS_NAME)
+            //     ->setQueue(Event::FUNCTIONS_QUEUE_NAME)
+            //     ->trigger();
+
+            // /**
+            //  * Trigger webhooks.
+            //  */
+            // $events
+            //     ->setClass(Event::WEBHOOK_CLASS_NAME)
+            //     ->setQueue(Event::WEBHOOK_QUEUE_NAME)
+            //     ->trigger();
+
+            // /**
+            //  * Trigger realtime.
+            //  */
+            // if ($project->getId() !== 'console') {
+            //     $allEvents = Event::generateEvents($events->getEvent(), $events->getParams());
+            //     $payload = new Document($events->getPayload());
+
+            //     $db = $events->getContext('database');
+            //     $collection = $events->getContext('collection');
+            //     $bucket = $events->getContext('bucket');
+
+            //     $target = Realtime::fromPayload(
+            //         // Pass first, most verbose event pattern
+            //         event: $allEvents[0],
+            //         payload: $payload,
+            //         project: $project,
+            //         database: $db,
+            //         collection: $collection,
+            //         bucket: $bucket,
+            //     );
+
+            //     Realtime::send(
+            //         projectId: $target['projectId'] ?? $project->getId(),
+            //         payload: $events->getPayload(),
+            //         events: $allEvents,
+            //         channels: $target['channels'],
+            //         roles: $target['roles'],
+            //         options: [
+            //             'permissionsChanged' => $target['permissionsChanged'],
+            //             'userId' => $events->getParam('userId')
+            //         ]
+            //     );
+            // }
+        } catch (\Throwable $th) {
+            if (empty($logger)) return;
+
+            $log = new Log();
+
+            if (isset($user) && !$user->isEmpty()) {
+                $log->setUser(new User($user->getId()));
+            }
+
+            $log->setNamespace("http");
+            $log->setServer(\gethostname());
+            $log->setVersion(App::getEnv('_APP_VERSION', 'UNKNOWN'));
+            $log->setType(Log::TYPE_ERROR);
+            $log->setMessage($th->getMessage());
+
+            $log->addTag('method', $route->getMethod());
+            $log->addTag('url', $route->getPath());
+            $log->addTag('verboseType', get_class($th));
+            $log->addTag('code', $th->getCode());
+            // $log->addTag('projectId', $project->getId()); // TODO: Figure out how to get ProjectID, if it becomes relevant
+            $log->addTag('hostname', $request->getHostname());
+            $log->addTag('locale', (string)$request->getParam('locale', $request->getHeader('x-appwrite-locale', '')));
+
+            $log->addExtra('file', $th->getFile());
+            $log->addExtra('line', $th->getLine());
+            $log->addExtra('trace', $th->getTraceAsString());
+            $log->addExtra('detailedTrace', $th->getTrace());
+            $log->addExtra('roles', Authorization::getRoles());
+
+            $action = $route->getLabel("sdk.namespace", "UNKNOWN_NAMESPACE") . '.' . $route->getLabel("sdk.method", "UNKNOWN_METHOD");
+            $log->setAction($action);
+
+            $isProduction = App::getEnv('_APP_ENV', 'development') === 'production';
+            $log->setEnvironment($isProduction ? Log::ENVIRONMENT_PRODUCTION : Log::ENVIRONMENT_STAGING);
+
+            foreach ($loggerBreadcrumbs as $loggerBreadcrumb) {
+                $log->addBreadcrumb($loggerBreadcrumb);
+            }
+
+            $logger->addLog($log);
+        }
+        
+
+    };
+}, ['utopia', 'logger', 'loggerBreadcrumbs', 'request', 'project', 'user', 'events']);

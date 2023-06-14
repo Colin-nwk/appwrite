@@ -79,11 +79,15 @@ function createAttribute(string $databaseId, string $collectionId, Document $att
         throw new Exception(Exception::DATABASE_NOT_FOUND);
     }
 
+    $events->setContext('database', $db);
+
     $collection = $dbForProject->getDocument('database_' . $db->getInternalId(), $collectionId);
 
     if ($collection->isEmpty()) {
         throw new Exception(Exception::COLLECTION_NOT_FOUND);
     }
+
+    $events->setContext('collection', $collection);
 
     if (!empty($format)) {
         if (!Structure::hasFormat($format, $type)) {
@@ -197,8 +201,6 @@ function createAttribute(string $databaseId, string $collectionId, Document $att
     ;
 
     $events
-        ->setContext('collection', $collection)
-        ->setContext('database', $db)
         ->setParam('databaseId', $databaseId)
         ->setParam('collectionId', $collection->getId())
         ->setParam('attributeId', $attribute->getId())
@@ -230,11 +232,15 @@ function updateAttribute(
         throw new Exception(Exception::DATABASE_NOT_FOUND);
     }
 
+    $events->setContext('database', $db);
+
     $collection = $dbForProject->getDocument('database_' . $db->getInternalId(), $collectionId);
 
     if ($collection->isEmpty()) {
         throw new Exception(Exception::COLLECTION_NOT_FOUND);
     }
+
+    $events->setContext('collection', $collection);
 
     $attribute = $dbForProject->getDocument('attributes', $db->getInternalId() . '_' . $collection->getInternalId() . '_' . $key);
 
@@ -359,8 +365,6 @@ function updateAttribute(
     $dbForProject->deleteCachedDocument('database_' . $db->getInternalId(), $collection->getId());
 
     $events
-        ->setContext('collection', $collection)
-        ->setContext('database', $db)
         ->setParam('databaseId', $databaseId)
         ->setParam('collectionId', $collection->getId())
         ->setParam('attributeId', $attribute->getId());
@@ -731,6 +735,8 @@ App::post('/v1/databases/:databaseId/collections')
             throw new Exception(Exception::DATABASE_NOT_FOUND);
         }
 
+        $events->setContext('database', $database);
+
         $collectionId = $collectionId == 'unique()' ? ID::unique() : $collectionId;
 
         // Map aggregate permissions into the multiple permissions they represent.
@@ -757,7 +763,6 @@ App::post('/v1/databases/:databaseId/collections')
         }
 
         $events
-            ->setContext('database', $database)
             ->setParam('databaseId', $databaseId)
             ->setParam('collectionId', $collection->getId());
 
@@ -996,6 +1001,8 @@ App::put('/v1/databases/:databaseId/collections/:collectionId')
             throw new Exception(Exception::COLLECTION_NOT_FOUND);
         }
 
+        $events->setContext('database', $database);
+
         $permissions ??= $collection->getPermissions() ?? [];
 
         // Map aggregate permissions into the multiple permissions they represent.
@@ -1018,7 +1025,6 @@ App::put('/v1/databases/:databaseId/collections/:collectionId')
         }
 
         $events
-            ->setContext('database', $database)
             ->setParam('databaseId', $databaseId)
             ->setParam('collectionId', $collection->getId());
 
@@ -2231,11 +2237,16 @@ App::delete('/v1/databases/:databaseId/collections/:collectionId/attributes/:key
         if ($db->isEmpty()) {
             throw new Exception(Exception::DATABASE_NOT_FOUND);
         }
+
+        $events->setContext('database', $db);
+
         $collection = $dbForProject->getDocument('database_' . $db->getInternalId(), $collectionId);
 
         if ($collection->isEmpty()) {
             throw new Exception(Exception::COLLECTION_NOT_FOUND);
         }
+
+        $events->setContext('collection', $collection);
 
         $attribute = $dbForProject->getDocument('attributes', $db->getInternalId() . '_' . $collection->getInternalId() . '_' . $key);
 

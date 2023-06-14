@@ -219,7 +219,7 @@ App::post('/v1/account/sessions/email')
                 ->setAttribute('password', Auth::passwordHash($password, Auth::DEFAULT_ALGO, Auth::DEFAULT_ALGO_OPTIONS))
                 ->setAttribute('hash', Auth::DEFAULT_ALGO)
                 ->setAttribute('hashOptions', Auth::DEFAULT_ALGO_OPTIONS);
-            $dbForProject->updateDocument('users', $profile->getId(), $profile);
+            $dbForProject->silent(fn () => $dbForProject->updateDocument('users', $profile->getId(), $profile));
         }
 
         $dbForProject->deleteCachedDocument('users', $profile->getId());
@@ -581,7 +581,7 @@ App::get('/v1/account/sessions/oauth2/:provider/redirect')
 
         Authorization::setRole(Role::user($user->getId())->toString());
 
-        $dbForProject->updateDocument('users', $user->getId(), $user);
+        $dbForProject->silent(fn() => $dbForProject->updateDocument('users', $user->getId(), $user));
 
         $session = $dbForProject->createDocument('sessions', $session->setAttribute('$permissions', [
             Permission::read(Role::user($user->getId())),
@@ -702,6 +702,10 @@ App::post('/v1/account/sessions/magic-url')
 
         $loginSecret = Auth::tokenGenerator();
         $expire = DateTime::addSeconds(new \DateTime(), Auth::TOKEN_EXPIRATION_CONFIRM);
+
+        $events->setContext('token', new Document([
+            'secret' => $loginSecret,
+        ]));
 
         $token = new Document([
             '$id' => ID::unique(),
@@ -829,6 +833,10 @@ App::put('/v1/account/sessions/magic-url')
         $secret = Auth::tokenGenerator();
         $expire = DateTime::addSeconds(new \DateTime(), $duration);
 
+        $events->setContext('token', new Document([
+            'secret' => $secret,
+        ]));
+
         $session = new Document(array_merge(
             [
                 '$id' => ID::unique(),
@@ -856,18 +864,16 @@ App::put('/v1/account/sessions/magic-url')
 
         $dbForProject->deleteCachedDocument('users', $user->getId());
 
-        $tokens = $user->getAttribute('tokens', []);
-
         /**
          * We act like we're updating and validating
          *  the recovery token but actually we don't need it anymore.
          */
-        $dbForProject->deleteDocument('tokens', $token);
+        $dbForProject->silent(fn() => $dbForProject->deleteDocument('tokens', $token));
         $dbForProject->deleteCachedDocument('users', $user->getId());
 
         $user->setAttribute('emailVerification', true);
 
-        $user = $dbForProject->updateDocument('users', $user->getId(), $user);
+        $user = $dbForProject->silent(fn() => $dbForProject->updateDocument('users', $user->getId(), $user));
 
         if (false === $user) {
             throw new Exception(Exception::GENERAL_SERVER_ERROR, 'Failed saving user to DB');
@@ -977,6 +983,10 @@ App::post('/v1/account/sessions/phone')
 
         $secret = Auth::codeGenerator();
         $expire = DateTime::addSeconds(new \DateTime(), Auth::TOKEN_EXPIRATION_PHONE);
+
+        $events->setContext('token', new Document([
+            'secret' => $secret,
+        ]));
 
         $token = new Document([
             '$id' => ID::unique(),
@@ -1097,12 +1107,12 @@ App::put('/v1/account/sessions/phone')
          * We act like we're updating and validating
          *  the recovery token but actually we don't need it anymore.
          */
-        $dbForProject->deleteDocument('tokens', $token);
+        $dbForProject->silent(fn() => $dbForProject->deleteDocument('tokens', $token));
         $dbForProject->deleteCachedDocument('users', $user->getId());
 
         $user->setAttribute('phoneVerification', true);
 
-        $user = $dbForProject->updateDocument('users', $user->getId(), $user);
+        $user = $dbForProject->silent(fn() => $dbForProject->updateDocument('users', $user->getId(), $user));
 
         if (false === $user) {
             throw new Exception(Exception::GENERAL_SERVER_ERROR, 'Failed saving user to DB');
@@ -2084,6 +2094,11 @@ App::post('/v1/account/recovery')
         $expire = DateTime::addSeconds(new \DateTime(), Auth::TOKEN_EXPIRATION_RECOVERY);
 
         $secret = Auth::tokenGenerator();
+
+        $events->setContext('token', new Document([
+            'secret' => $secret,
+        ]));
+
         $recovery = new Document([
             '$id' => ID::unique(),
             'userId' => $profile->getId(),
@@ -2268,6 +2283,10 @@ App::post('/v1/account/verification')
         $verificationSecret = Auth::tokenGenerator();
         $expire = DateTime::addSeconds(new \DateTime(), Auth::TOKEN_EXPIRATION_CONFIRM);
 
+        $events->setContext('token', new Document([
+            'secret' => $verificationSecret,
+        ]));
+
         $verification = new Document([
             '$id' => ID::unique(),
             'userId' => $user->getId(),
@@ -2441,6 +2460,10 @@ App::post('/v1/account/verification/phone')
         $verificationSecret = Auth::tokenGenerator();
         $secret = Auth::codeGenerator();
         $expire = DateTime::addSeconds(new \DateTime(), Auth::TOKEN_EXPIRATION_CONFIRM);
+
+        $events->setContext('token', new Document([
+            'secret' => $secret,
+        ]));
 
         $verification = new Document([
             '$id' => ID::unique(),
